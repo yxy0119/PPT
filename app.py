@@ -3,6 +3,7 @@ import uuid
 import tempfile
 import requests
 import json
+import base64
 from io import BytesIO
 from flask import Flask, request, send_file, jsonify
 from pptx import Presentation
@@ -29,7 +30,6 @@ def get_file_from_request(param_name):
             try:
                 resp = requests.get(url, timeout=30)
                 resp.raise_for_status()
-                # 从 URL 中提取文件名（带扩展名）
                 filename = url.split('/')[-1].split('?')[0] or 'file.pptx'
                 return BytesIO(resp.content), filename
             except Exception as e:
@@ -38,14 +38,32 @@ def get_file_from_request(param_name):
     return None, None
 
 
+def prepare_file_response(file_path, download_name):
+    """
+    根据请求参数 output 决定返回 JSON 还是文件
+    如果请求中有 output=json，则返回 base64 编码的 JSON
+    否则直接返回文件
+    """
+    output_format = request.args.get('output') or request.form.get('output')
+    if output_format == 'json':
+        with open(file_path, 'rb') as f:
+            content = f.read()
+        os.unlink(file_path)
+        return jsonify({
+            'filename': download_name,
+            'base64': base64.b64encode(content).decode('utf-8')
+        })
+    else:
+        return send_file(file_path, as_attachment=True, download_name=download_name)
+
+
 @app.route('/')
 def index():
-    return 'PPT Service is running! 使用 /extract_template 或 /generate_ppt 接口。'
+    return 'PPT Service is running!'
 
 
 @app.route('/openapi.json', methods=['GET'])
 def openapi_spec():
-    """返回 OpenAPI 规范（如果使用云侧插件自动解析）"""
     spec = {
         "openapi": "3.0.0",
         "info": {"title": "PPT 工具", "version": "1.0.0"},
@@ -54,23 +72,56 @@ def openapi_spec():
             "/extract_template": {
                 "post": {
                     "operationId": "extract_template",
+                    "parameters": [
+                        {
+                            "name": "output",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "string"}
+                        }
+                    ],
                     "requestBody": {
                         "content": {
                             "multipart/form-data": {
                                 "schema": {
                                     "type": "object",
-                                    "properties": {"file": {"type": "string", "format": "binary"}},
+                                    "properties": {
+                                        "file": {"type": "string", "format": "binary"}
+                                    },
                                     "required": ["file"]
                                 }
                             }
                         }
                     },
-                    "responses": {"200": {"description": "OK"}}
+                    "responses": {
+                        "200": {
+                            "description": "OK",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "filename": {"type": "string"},
+                                            "base64": {"type": "string"}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             },
             "/generate_ppt": {
                 "post": {
                     "operationId": "generate_ppt",
+                    "parameters": [
+                        {
+                            "name": "output",
+                            "in": "query",
+                            "required": False,
+                            "schema": {"type": "string"}
+                        }
+                    ],
                     "requestBody": {
                         "content": {
                             "multipart/form-data": {
@@ -85,7 +136,22 @@ def openapi_spec():
                             }
                         }
                     },
-                    "responses": {"200": {"description": "OK"}}
+                    "responses": {
+                        "200": {
+                            "description": "OK",
+                            "content": {
+                                    "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "filename": {"type": "string"},
+                                            "base64": {"type": "string"}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -95,19 +161,16 @@ def openapi_spec():
 
 @app.route('/extract_template', methods=['POST'])
 def extract_template():
-    """接收风格PPT文件（上传或URL），返回去除了所有幻灯片的空白模板"""
     file_obj, filename = get_file_from_request('file')
     if not file_obj:
         return jsonify({'error': 'No file'}), 400
 
-    # 保存上传/下载的文件到临时路径
     with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp:
         tmp.write(file_obj.read())
         src_path = tmp.name
 
     try:
         prs = Presentation(src_path)
-        # 删除所有幻灯片，保留母版和版式
         while len(prs.slides) > 0:
             rId = prs.slides._sldIdLst[0].get('r:id')
             if rId is None:
@@ -119,30 +182,26 @@ def extract_template():
         template_path = f'/tmp/{uuid.uuid4()}.pptx'
         prs.save(template_path)
     finally:
-        os.unlink(src_path)  # 删除源文件
+        os.unlink(src_path)
 
-    return send_file(template_path, as_attachment=True, download_name='template.pptx')
-
+    return prepare_file_response(template_path, 'template.pptx')
 
 @app.route('/generate_ppt', methods=['POST'])
 def generate_ppt():
-    """接收模板文件和结构化内容JSON，生成最终PPT"""
-    # 获取模板文件
     template_obj, _ = get_file_from_request('template')
     if not template_obj:
         return jsonify({'error': 'Missing template file'}), 400
 
-    # 获取 slides_data（可能在 JSON 或 form-data 中）
     if request.is_json:
         data = request.get_json()
         slides_data = data.get('slides_data', '[]')
     else:
         slides_data = request.form.get('slides_data', '[]')
 
-    # 保存模板到临时文件
     with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp:
         tmp.write(template_obj.read())
         template_path = tmp.name
+
     try:
         slides = json.loads(slides_data)
         prs = Presentation(template_path)
@@ -156,15 +215,12 @@ def generate_ppt():
                     matched_layout = layout
                     break
             if not matched_layout:
-                matched_layout = layouts[1]  # 默认使用第二个版式
+                matched_layout = layouts[1]
 
             slide = prs.slides.add_slide(matched_layout)
-
-            # 设置标题
             if slide.shapes.title:
                 slide.shapes.title.text = slide_data.get('title', '')
 
-            # 填充正文占位符（索引为1）
             for shape in slide.placeholders:
                 if shape.placeholder_format.idx == 1:
                     tf = shape.text_frame
@@ -173,7 +229,6 @@ def generate_ppt():
                         p = tf.add_paragraph()
                         p.text = point
                         p.level = 0
-                    # 添加固定文本（小字）
                     for fixed_text in slide_data.get('fixed_texts', []):
                         p = tf.add_paragraph()
                         p.text = fixed_text
@@ -183,10 +238,12 @@ def generate_ppt():
         output_path = f'/tmp/{uuid.uuid4()}.pptx'
         prs.save(output_path)
     finally:
-        os.unlink(template_path)  # 删除临时模板
+        os.unlink(template_path)
 
-    return send_file(output_path, as_attachment=True, download_name='generated.pptx')
+    return prepare_file_response(output_path, 'generated.pptx')
 
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
+    
+                             
