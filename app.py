@@ -39,13 +39,9 @@ def get_file_from_request(param_name):
 
 
 def prepare_file_response(file_path, download_name):
-    """
-    根据请求参数 output 决定返回 JSON 还是文件
-    如果请求中有 output=json，则返回 base64 编码的 JSON
-    否则直接返回文件
-    """
-    output_format = request.args.get('output') or request.form.get('output')
-    if output_format == 'json':
+    # 检查客户端是否明确要求 application/json
+    accept_header = request.headers.get('Accept', '')
+    if 'application/json' in accept_header:
         with open(file_path, 'rb') as f:
             content = f.read()
         os.unlink(file_path)
@@ -55,8 +51,7 @@ def prepare_file_response(file_path, download_name):
         })
     else:
         return send_file(file_path, as_attachment=True, download_name=download_name)
-
-
+        
 @app.route('/')
 def index():
     return 'PPT Service is running!'
