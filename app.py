@@ -99,3 +99,103 @@ def generate_ppt():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
+
+
+import json
+
+# 你的 OpenAPI 规范 JSON（用上一次我给你的完整 JSON）
+OPENAPI_SPEC = {
+    "openapi": "3.0.0",
+    "info": {
+        "title": "PPT 工具",
+        "version": "1.0.0"
+    },
+    "servers": [
+        {
+            "url": "https://ppt-production-cca7.up.railway.app",
+            "description": "Railway 服务"
+        }
+    ],
+    "paths": {
+        "/extract_template": {
+            "post": {
+                "summary": "提取PPT模板",
+                "operationId": "extract_template",
+                "requestBody": {
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "file": {
+                                        "type": "string",
+                                        "format": "binary",
+                                        "description": "用户上传的风格PPT文件"
+                                    }
+                                },
+                                "required": ["file"]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "返回空白模板文件",
+                        "content": {
+                            "application/vnd.openxmlformats-officedocument.presentationml.presentation": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/generate_ppt": {
+            "post": {
+                "summary": "生成PPT",
+                "operationId": "generate_ppt",
+                "requestBody": {
+                    "content": {
+                        "multipart/form-data": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "template": {
+                                        "type": "string",
+                                        "format": "binary",
+                                        "description": "空白模板文件"
+                                    },
+                                    "slides_data": {
+                                        "type": "string",
+                                        "description": "结构化幻灯片内容JSON字符串"
+                                    }
+                                },
+                                "required": ["template", "slides_data"]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "返回生成的PPT文件",
+                        "content": {
+                            "application/vnd.openxmlformats-officedocument.presentationml.presentation": {
+                                "schema": {
+                                    "type": "string",
+                                    "format": "binary"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@app.route('/openapi.json', methods=['GET'])
+def openapi_spec():
+    return jsonify(OPENAPI_SPEC)
